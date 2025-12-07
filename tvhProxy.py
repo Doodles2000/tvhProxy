@@ -1,5 +1,4 @@
-from gevent import monkey
-monkey.patch_all()
+from gevent import monkey; monkey.patch_all()
 import json
 from dotenv import load_dotenv
 from ssdp import SSDPServer
@@ -49,10 +48,10 @@ config = {
 discoverData = {
     'FriendlyName': 'tvhProxy',
     'Manufacturer': 'Silicondust',
-    'ModelNumber': 'HDTC-2US',
+    'ModelNumber': 'HDFX-4DT',
     'FirmwareName': 'hdhomeruntc_atsc',
     'TunerCount': int(config['tunerCount']),
-    'FirmwareVersion': '20150826',
+    'FirmwareVersion': '20231214',
     'DeviceID': config['deviceID'],
     'DeviceAuth': 'test1234',
     'BaseURL': '%s' % (config['tvhProxyURL'] or "http://" + config['tvhProxyHost'] + ":" + str(config['tvhProxyPort'])),
@@ -79,15 +78,44 @@ def status():
 def lineup():
     lineup = []
 
-    for c in _get_channels():
-        if c['enabled']:
-            url = '%s/stream/channel/%s?profile=%s&weight=%s' % (
-                config['tvhURL'], c['uuid'], config['streamProfile'], int(config['tvhWeight']))
+#    for c in _get_channels():
+#        if c['enabled']:
+#            url = '%s/stream/channel/%s?profile=%s&weight=%s' % (
+#                config['tvhURL'], c['uuid'], config['streamProfile'], int(config['tvhWeight']))
 
-            lineup.append({'GuideNumber': str(c['number']),
-                           'GuideName': c['name'],
-                           'URL': url
-                           })
+#            lineup.append({'GuideNumber': str(c['number']),
+#                           'GuideName': c['name'],
+#                           'URL': url
+#                           })
+
+    channels = _get_channels() or []
+    for c in channels:
+        # skip disabled channels
+        
+        if not c.get('enabled', True):
+            continue
+    
+        uuid = c.get('uuid')
+        if not uuid:
+        # nothing to tune without a UUID
+            continue
+    
+        # TVH sometimes uses "number" and sometimes "channum"
+        ch_num = c.get('number') or c.get('channum') or ''
+        name = c.get('name', f'CH-{ch_num or "?"}')
+    
+        url = '%s/stream/channel/%s?profile=%s&weight=%s' & (
+            config['tvhURL'],
+            uuid,
+            config['streamProfile'],
+            int(config['tvhWeight'])
+        )
+    
+        lineup.append({
+            'GuideNumber': str(ch_num),
+            'GuideName': name,
+            'URL': url
+        })
 
     return jsonify(lineup)
 
@@ -115,13 +143,15 @@ def _get_channels():
         'start': 0
     }
     try:
-        r = requests.get(url, params=params, auth=HTTPDigestAuth(
-            config['tvhUser'], config['tvhPassword']))
-        return r.json(strict=False)['entries']
-
+        r = requests.get(url, timeout=5)
+        r.raise_for_status()
+        data = r.json()
+        return data.get('entries', [])
     except Exception as e:
-        logger.error('An error occured: %s' + repr(e))
-
+        # log to stdout so you can see it in journalctl
+        print('An error occured fetching channels from TVHeadend: %r' % (e,))
+        return []
+    
 
 def _get_genres():
     def _findMainCategory(majorCategories, minorCategory):
