@@ -29,6 +29,7 @@ Should the proxy keep disappearing or you can't add it, it's worth trying to del
 - See https://support.plex.tv/articles/201100678-repair-a-corrupt-database/ on how to access the plex config database and
 - run ```delete from media_provider_resources;``` to remove any leftover config.
 
+#### Update - tvhproxy no longer required! - built into TVHeadend 
 20251230 - While working on this, noticed the folks over at TVHeadend had already added HDHomeRun emulation into TVHeadend.
 Handy links for details:
 https://tvheadend.org/d/8698-tvheadend-hdhomerun-emulation-howto
