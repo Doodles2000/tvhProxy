@@ -37,3 +37,23 @@ Handy links for details:
 - https://christian.kuendig.info/posts/2020-02-tvhproxy/
 - https://github.com/tvheadend/tvheadend/pull/1348
 
+
+Enable HDHome run emulation
+View level: Expert
+
+Configuration -> General -> Base -> HDHomeRun
+Tick Enable HDHomeRun Server Emulation 
+Set the number of tuners to match physical tuners
+
+Users -> Add
+View Level: Advanced
+Tick enabled
+Username: *
+Change Parameters: Rights
+Streaming: Basic, Advanced,HSTP
+Allowed Networks: 127.0.0.1/32, [insert network]
+Apply
+
+Point Plex to
+tuner: http://[tvheadendip]:9981 (or the configured acces port for TVHeadend)
+EPG: http://[tvheadendip]:9981/xmltv/channels
