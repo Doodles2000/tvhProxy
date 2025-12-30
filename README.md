@@ -28,3 +28,11 @@ Enter the IP of the host running tvhProxy including port 5004, eg.: ```192.168.1
 Should the proxy keep disappearing or you can't add it, it's worth trying to delete the existing configuration from the database: 
 - See https://support.plex.tv/articles/201100678-repair-a-corrupt-database/ on how to access the plex config database and
 - run ```delete from media_provider_resources;``` to remove any leftover config.
+
+20251230 - While working on this, noticed the folks over at TVHeadend had already added HDHomeRun emulation into TVHeadend.
+Handy links for details:
+https://tvheadend.org/d/8698-tvheadend-hdhomerun-emulation-howto
+https://christian.kuendig.info/posts/2023-11-tvheadend-hdhomerun/
+https://christian.kuendig.info/posts/2020-02-tvhproxy/
+https://github.com/tvheadend/tvheadend/pull/1348
+
