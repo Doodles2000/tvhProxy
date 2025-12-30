@@ -1,5 +1,4 @@
-from gevent import monkey
-monkey.patch_all()
+from gevent import monkey; monkey.patch_all()
 import json
 from dotenv import load_dotenv
 from ssdp import SSDPServer
@@ -10,8 +9,8 @@ from datetime import timedelta, datetime, time
 import logging
 import socket
 import threading
-from requests.auth import HTTPDigestAuth
 import requests
+from requests.auth import HTTPDigestAuth
 import os
 import sched
 
@@ -26,15 +25,20 @@ logger = logging.getLogger()
 host_name = socket.gethostname()
 host_ip = socket.gethostbyname(host_name)
 
-# URL format: <protocol>://<username>:<password>@<hostname>:<port>, example: https://test:1234@localhost:9981
+# URL format: <protocol>://<username>:<password>@<hostname>:<port>,
+# example: https://test:1234@localhost:9981
 config = {
     'deviceID': os.environ.get('DEVICE_ID') or '12345678',
-    'bindAddr': os.environ.get('TVH_BINDADDR') or '',
+    #bindAddr was only being used for the WSGI server, changed to use tvhProxyHost value
+    #'bindAddr': os.environ.get('TVH_BINDADDR') or '',
     # only used if set (in case of forward-proxy)
-    'tvhURL': os.environ.get('TVH_URL') or 'http://localhost:9981',
-    'tvhProxyURL': os.environ.get('TVH_PROXY_URL'),
+    #'tvhProxyURL': os.environ.get('TVH_PROXY_URL'),
     'tvhProxyHost': os.environ.get('TVH_PROXY_HOST') or host_ip,
     'tvhProxyPort': os.environ.get('TVH_PROXY_PORT') or 5004,
+    #environment provides tvhProxy / tvh host ip and port - building the URL(s) in the script
+    #'tvhURL': os.environ.get('TVH_URL') or 'http://localhost:9981',
+    'tvhHost': os.environ.get('TVH_HOST') or host_ip,
+    'tvhPort': os.environ.get('TVH_PORT') or 9981,
     'tvhUser': os.environ.get('TVH_USER') or '',
     'tvhPassword': os.environ.get('TVH_PASSWORD') or '',
     # number of tuners in tvh
@@ -46,17 +50,20 @@ config = {
     'streamProfile': os.environ.get('TVH_PROFILE') or 'pass'
 }
 
+config['tvhURL'] = ("http://" + config['tvhHost'] + ":" + str(config['tvhPort']))
+
 discoverData = {
     'FriendlyName': 'tvhProxy',
     'Manufacturer': 'Silicondust',
-    'ModelNumber': 'HDTC-2US',
+    'ModelNumber': 'HDFX-4DT',
     'FirmwareName': 'hdhomeruntc_atsc',
     'TunerCount': int(config['tunerCount']),
-    'FirmwareVersion': '20150826',
+    'FirmwareVersion': '20231214',
     'DeviceID': config['deviceID'],
     'DeviceAuth': 'test1234',
-    'BaseURL': '%s' % (config['tvhProxyURL'] or "http://" + config['tvhProxyHost'] + ":" + str(config['tvhProxyPort'])),
-    'LineupURL': '%s/lineup.json' % (config['tvhProxyURL'] or "http://" + config['tvhProxyHost'] + ":" + str(config['tvhProxyPort']))
+    'BaseURL': ("http://" + config['tvhProxyHost'] + ":" + str(config['tvhProxyPort'])),
+    'LineupURL': '%s/lineup.json' 
+    % ("http://" + config['tvhProxyHost'] + ":" + str(config['tvhProxyPort'])),
 }
 
 
@@ -69,7 +76,7 @@ def discover():
 def status():
     return jsonify({
         'ScanInProgress': 0,
-        'ScanPossible': 0,
+        'ScanPossible': 1,
         'Source': "Cable",
         'SourceList': ['Cable']
     })
@@ -79,15 +86,34 @@ def status():
 def lineup():
     lineup = []
 
-    for c in _get_channels():
-        if c['enabled']:
-            url = '%s/stream/channel/%s?profile=%s&weight=%s' % (
-                config['tvhURL'], c['uuid'], config['streamProfile'], int(config['tvhWeight']))
+    channels = _get_channels() or []
+    for c in channels:
+        # skip disabled channels
 
-            lineup.append({'GuideNumber': str(c['number']),
-                           'GuideName': c['name'],
-                           'URL': url
-                           })
+        if not c.get('enabled', True):
+            continue
+
+        uuid = c.get('uuid')
+        if not uuid:
+            # nothing to tune without a UUID
+            continue
+
+        # TVH sometimes uses "number" and sometimes "channum"
+        ch_num = c.get('number') or c.get('channum') or ''
+        name = c.get('name', f'CH-{ch_num or "?"}')
+
+        url = '%s/stream/channel/%s?profile=%s&weight=%s' % (
+            config['tvhURL'],
+            uuid,
+            config['streamProfile'],
+            int(config['tvhWeight'])
+        )
+
+        lineup.append({
+            'GuideNumber': str(ch_num),
+            'GuideName': name,
+            'URL': url
+        })
 
     return jsonify(lineup)
 
@@ -115,12 +141,15 @@ def _get_channels():
         'start': 0
     }
     try:
-        r = requests.get(url, params=params, auth=HTTPDigestAuth(
-            config['tvhUser'], config['tvhPassword']))
-        return r.json(strict=False)['entries']
-
+        r = requests.get(
+            url, timeout=5, auth=HTTPDigestAuth(config['tvhUser'], config['tvhPassword'])
+            )
+        r.raise_for_status()
+        data = r.json()
+        return data.get('entries', [])
     except Exception as e:
-        logger.error('An error occured: %s' + repr(e))
+        logger.error('An error occured fetching channels from TVHeadend: %r' + repr(e))
+        return []
 
 
 def _get_genres():
@@ -161,26 +190,42 @@ def _get_genres():
 def _get_xmltv():
     try:
         url = '%s/xmltv/channels' % config['tvhURL']
-        r = requests.get(url, auth=HTTPDigestAuth(
-            config['tvhUser'], config['tvhPassword']))
+        r = requests.get(
+            url, auth=HTTPDigestAuth(config['tvhUser'], config['tvhPassword'])
+        )
         logger.info('downloading xmltv from %s', r.url)
         tree = ElementTree.ElementTree(
-            ElementTree.fromstring(requests.get(url, auth=HTTPDigestAuth(config['tvhUser'], config['tvhPassword'])).content))
+            ElementTree.fromstring(
+                requests.get(
+                    url, auth=HTTPDigestAuth(config['tvhUser'], config['tvhPassword'])
+                ).content
+            )
+        )
+        
         root = tree.getroot()
         url = '%s/api/epg/events/grid' % config['tvhURL']
         params = {
             'limit': 999999,
-            'filter': json.dumps([
-                {
-                    "field": "start",
-                    "type": "numeric",
-                    "value": int(round(datetime.timestamp(datetime.now() + timedelta(hours=72)))),
-                    "comparison": "lt"
-                }
-            ])
+            'filter': json.dumps(
+                [
+                    {
+                        "field": "start",
+                        "type": "numeric",
+                        "value": int(
+                            round(
+                                datetime.timestamp(datetime.now() + timedelta(hours=72))
+                            )
+                        ),
+                        "comparison": "lt",
+                    }
+                ]
+            ),
         }
-        r = requests.get(url, params=params,  auth=HTTPDigestAuth(
-            config['tvhUser'], config['tvhPassword']))
+        r = requests.get(
+            url,
+            params=params,
+            auth=HTTPDigestAuth(config['tvhUser'], config['tvhPassword'])
+        )
         logger.info('downloading epg grid from %s', r.url)
         epg_events_grid = r.json(strict=False)['entries']
         epg_events = {}
@@ -198,7 +243,7 @@ def _get_xmltv():
         for child in root:
             if child.tag == 'channel':
                 channelId = child.attrib['id']
-                channelNo = child[1].text
+                channelNo = child[0].text
                 if not channelNo:
                     logger.error("No channel number for: %s", channelId)
                     channelNo = "00"
@@ -229,37 +274,38 @@ def _get_xmltv():
                 channelNumber = channelNumberMapping[channelUuid]
                 channelsInEPG[channelNumber] = True
                 child.attrib['channel'] = channelNumber
-                start_datetime = datetime.strptime(
-                    child.attrib['start'], "%Y%m%d%H%M%S %z").astimezone(tz=None).replace(tzinfo=None)
-                stop_datetime = datetime.strptime(
-                    child.attrib['stop'], "%Y%m%d%H%M%S %z").astimezone(tz=None).replace(tzinfo=None)
-                if start_datetime >= datetime.now() + timedelta(hours=72):
-                    # Plex doesn't like extremely large XML files, we'll remove the details from entries more than 72h in the future
-                    # Fixed w/ plex server 1.19.2.2673
-                    # for desc in child.iter('desc'):
-                    #    child.remove(desc)
-                    pass
-                elif stop_datetime > datetime.now() and start_datetime < datetime.now() + timedelta(hours=72):
+                start_datetime = (
+                    datetime.strptime(child.attrib['start'], "%Y%m%d%H%M%S %z")
+                    .astimezone(tz=None)
+                    .replace(tzinfo=None)
+                )
+                stop_datetime = (
+                    datetime.strptime(child.attrib['stop'], "%Y%m%d%H%M%S %z")
+                    .astimezone(tz=None)
+                    .replace(tzinfo=None)
+                )
+                if (
+                    stop_datetime > datetime.now()
+                    and start_datetime < datetime.now() + timedelta(hours=72)
+                ):
                     # add extra details for programs in the next 72hs
                     start_timestamp = int(
-                        round(datetime.timestamp(start_datetime)))
+                        round(datetime.timestamp(start_datetime))
+                    )
                     epg_event = epg_events[channelUuid][start_timestamp]
                     if ('image' in epg_event):
                         programmeImage = ElementTree.SubElement(child, 'icon')
                         imageUrl = str(epg_event['image'])
                         if(imageUrl.startswith('imagecache')):
-                            imageUrl = config['tvhURL'] + \
-                                "/" + imageUrl + ".png"
+                            imageUrl = config['tvhURL'] + "/" + imageUrl + ".png"
                         programmeImage.attrib['src'] = imageUrl
                     if ('genre' in epg_event):
                         for genreId in epg_event['genre']:
                             for category in genres[genreId]:
-                                programmeCategory = ElementTree.SubElement(
-                                    child, 'category')
+                                programmeCategory = ElementTree.SubElement(child, 'category')
                                 programmeCategory.text = category
                     if ('episodeOnscreen' in epg_event):
-                        episodeNum = ElementTree.SubElement(
-                            child, 'episode-num')
+                        episodeNum = ElementTree.SubElement(child, 'episode-num')
                         episodeNum.attrib['system'] = 'onscreen'
                         episodeNum.text = epg_event['episodeOnscreen']
                     if('hd' in epg_event):
@@ -278,23 +324,23 @@ def _get_xmltv():
             if channelsInEPG[key]:
                 logger.debug("Programmes found for channel %s", key)
             else:
-                channelName = root.find(
-                    'channel[@id="'+key+'"]/display-name').text
-                logger.error("No programme for channel %s: %s",
-                             key, channelName)
+                channelName = root.find('channel[@id="'+key+'"]/display-name').text
+                logger.error("No programme for channel %s: %s", key, channelName)
                 # create 2h programmes for 72 hours
                 yesterday_midnight = datetime.combine(
-                    datetime.today(), time.min) - timedelta(days=1)
+                    datetime.today(), time.min
+                ) - timedelta(days=1)
                 date_format = '%Y%m%d%H%M%S'
                 for x in range(0, 36):
                     dummyProgramme = ElementTree.SubElement(root, 'programme')
                     dummyProgramme.attrib['channel'] = str(key)
                     dummyProgramme.attrib['start'] = (
-                        yesterday_midnight + timedelta(hours=x*2)).strftime(date_format)
+                        yesterday_midnight + timedelta(hours=x*2)
+                    ).strftime(date_format)
                     dummyProgramme.attrib['stop'] = (
-                        yesterday_midnight + timedelta(hours=(x*2)+2)).strftime(date_format)
-                    dummyTitle = ElementTree.SubElement(
-                        dummyProgramme, 'title')
+                        yesterday_midnight + timedelta(hours=(x*2)+2)
+                    ).strftime(date_format)
+                    dummyTitle = ElementTree.SubElement(dummyProgramme, 'title')
                     dummyTitle.attrib['lang'] = 'eng'
                     dummyTitle.text = channelName
                     dummyDesc = ElementTree.SubElement(dummyProgramme, 'desc')
@@ -312,16 +358,28 @@ def _start_ssdp():
     thread_ssdp = threading.Thread(target=ssdp.run, args=())
     thread_ssdp.daemon = True  # Daemonize thread
     thread_ssdp.start()
-    ssdp.register('local',
-                  'uuid:{}::upnp:rootdevice'.format(discoverData['DeviceID']),
-                  'upnp:rootdevice',
-                  'http://{}:{}/device.xml'.format(
-                      config['tvhProxyHost'], config['tvhProxyPort']),
-                  'SSDP Server for tvhProxy')
+    ssdp.register(
+        'local',
+        'uuid:{}::upnp:rootdevice'.format(discoverData['DeviceID']),
+        'upnp:rootdevice',
+        'http://{}:{}/device.xml'.format(
+            config['tvhProxyHost'], config['tvhProxyPort']
+        ),
+        'SSDP Server for tvhProxy',
+    )
+
+
+def main():
+    http = WSGIServer(
+        (config['tvhProxyHost'], int(config['tvhProxyPort'])),
+        app.wsgi_app,
+        log=logger,
+        error_log=logger,
+    )
+    _start_ssdp()
+    http.serve_forever()
 
 
 if __name__ == '__main__':
-    http = WSGIServer((config['bindAddr'], int(config['tvhProxyPort'])),
-                      app.wsgi_app, log=logger, error_log=logger)
-    _start_ssdp()
-    http.serve_forever()
+    main()
+
