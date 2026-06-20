@@ -131,3 +131,5 @@ dmypy.json
 #Visual Studio Code
 settings.json
 
+# Apple file keeping
+.DS_Store
